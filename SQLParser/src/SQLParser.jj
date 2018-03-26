@@ -1,0 +1,861 @@
+options
+{
+  static = true;
+  DEBUG_PARSER = false;
+  //case insensitive 하게 해준다.
+  IGNORE_CASE = true;
+}
+
+PARSER_BEGIN(SQLParser)
+
+//import
+import java.io.IOException;
+import java.util.ArrayList;
+
+import com.sleepycat.je.Environment;
+import com.sleepycat.je.EnvironmentConfig;
+import java.io.File;
+
+
+import DDL.*;
+import DML.*;
+import DBQuery.*;
+import DML.Where.*;
+
+public class SQLParser
+{
+  public static final int PRINT_SYNTAX_ERROR = 0;
+  public static final int CREATE_TABLE_QUERY = 1;
+  public static final int DROP_TABLE_QUERY = 2;
+  public static final int DESC_QUERY = 3;
+  public static final int SHOW_TABLES_QUERY = 4;
+  public static final int SELECT_QUERY = 5;
+  public static final int INSERT_QUERY = 6;
+  public static final int DELETE_QUERY = 7;
+
+  //variables for create table query
+  static String globalTableName = null; // 쿼리 바꿀 때 사용하기
+  static TableSchema TableSchema = null;
+  static ColumnDefinition ColDef = null;
+  static ForeignKeyDefinition ForeignDef = null;
+  static Insert Insert = null;
+  static Delete Delete = null;
+  static Select Select = null;
+  
+  public static void main(String args[]) throws ParseException
+  {
+    
+    SQLParser parser = new SQLParser(System.in);
+    System.out.print("DB_2016-12155> ");
+
+    while (true)
+    {
+      try
+      {
+        parser.command();
+      }
+      catch (Exception e)
+      {
+        printMessage(PRINT_SYNTAX_ERROR);
+        SQLParser.ReInit(System.in);
+      }
+    }
+  }
+
+  //파라미터로 들어오는 int 값에 따라 해당되는 문구를 출력한다.
+  public static void printMessage(int q)
+  {
+    switch(q)
+    {
+      case PRINT_SYNTAX_ERROR:
+      	System.out.println("Syntax error");
+      	break;
+      case CREATE_TABLE_QUERY:
+    	DDLQuery.createTableQuery(TableSchema);
+    	TableSchema = null;
+      	break;
+      case DROP_TABLE_QUERY:
+    	DDLQuery.dropTableQuery(globalTableName);
+    	globalTableName = null;
+      	break;
+      case DESC_QUERY:
+    	DDLQuery.descQuery(globalTableName);
+    	globalTableName = null;
+      	break;
+      case SHOW_TABLES_QUERY:
+        DDLQuery.showTablesQuery();
+      	break;
+      case INSERT_QUERY:
+      	Insert.execute();
+      	Insert = null;
+      	break;
+      case DELETE_QUERY:
+      	Delete.execute();
+      	Delete = null;
+      	break;
+      case SELECT_QUERY:
+        Select.execute();
+        Select = null;
+      	break;
+    }
+    System.out.print("DB_2016-12155> ");
+  }
+}
+
+
+PARSER_END(SQLParser)
+
+SKIP : { " " | "\r" | "\t" | "\n" }
+
+TOKEN : /* Keywords, <LEGAL IDENTIFIER> 될 수 없다 */
+{
+  < EXIT : "exit" >
+| < INT : "int" >
+| < CHAR : "char" >
+| < DATE : "date" >
+| < CREATE_TABLE : "create table" >
+| < NOT_NULL : "not null" >
+| < NULL : "null" >
+| < PRIMARY_KEY : "primary key" >
+| < FOREIGN_KEY : "foreign key" >
+| < REFERENCES : "references" >
+| < DROP_TABLE : "drop table" >
+| < DESC : "desc" >
+| < SHOW_TABLES : "show tables" >
+| < SELECT : "select" >
+| < INSERT : "insert into" >
+| < DELETE : "delete from" >
+| < VALUES : "values" >
+| < ASTERISK : "*" >
+| < AS : "as" >
+| < FROM : "from" >
+| < WHERE : "where" >
+| < AND : "and" >
+| < OR : "or" >
+| < NOT : "not" >
+| < IS : "is" >
+}
+
+TOKEN :
+{
+  < SEMICOLON : ";" >
+| < LEFT_PAREN : "(" >
+| < RIGHT_PAREN : ")" >
+| < COMMA : "," >
+| < UNDERSCORE : "_" >
+| < INT_VALUE : (< SIGN >)? (< DIGIT >)+>
+| < SIGN : "+" | "-" >
+| < DIGIT : [ "0"-"9" ] >
+| < LEGAL_IDENTIFIER : < ALPHABET > (< ALPHABET > | < UNDERSCORE >)* >
+| < ALPHABET : [ "a"-"z", "A"-"Z" ] >
+| < PERIOD : "." >
+| < COMP_OP : "<" | ">" | "=" | ">=" | "<=" | "!=" >
+| < QUOTE : "\'" >
+|< NN : < DIGIT ><DIGIT >>
+|< NNNN : <NN><NN>>
+|< DATE_VALUE : < NNNN >"-"< NN >"-"<NN >>
+|< NON_QUOTE_SPECIAL_CHARACTERS : "~"|"`"|"!"|"@"|"#"|"$"|"%"|"^"|"&"|"*"|< RIGHT_PAREN >|< LEFT_PAREN >
+	|< SIGN >|< UNDERSCORE >|"="|"["|"{"|"]"|"}"|"\\"|"|"|":"|< SEMICOLON >|< COMMA >|"<"|< PERIOD >
+	|">"|"/"|"?" >
+|< CHAR_STRING : < QUOTE >(< DIGIT >|< ALPHABET>|< NON_QUOTE_SPECIAL_CHARACTERS >|" ")* <QUOTE> >
+}
+
+
+void command() :
+{}
+{
+  queryList()
+| (
+  //입력으로 Exit;이 들어오면 프로그램을 종료한다.
+    < EXIT >
+    < SEMICOLON >
+    {
+      
+      // Environment & Database define
+      Environment myDbEnvironment = null;
+      // Open Database Environment or if not, create one.
+      EnvironmentConfig envConfig = new EnvironmentConfig();
+      envConfig.setAllowCreate(true);
+      myDbEnvironment = new Environment(new File("db/"), envConfig);
+      myDbEnvironment.sync();
+      if(myDbEnvironment != null) myDbEnvironment.close();
+
+      System.exit(0);
+    }
+  ) 
+}
+
+void queryList() :
+{
+  int q;
+}
+{
+  (
+    q = query()
+    < SEMICOLON >
+    {
+      //프롬포트와 입력에 맞는 메세지를 출력한다.
+      printMessage(q);
+    }
+  )+
+}
+
+//들어온 입력에 해당하는 쿼리를 나타내는 int 값을 리턴한다.
+int query() :
+{
+  int q;
+}
+{
+  (
+    createTableQuery()
+    {
+      q = CREATE_TABLE_QUERY;
+    }
+  | dropTableQuery()
+  	{
+  	   q = DROP_TABLE_QUERY;
+  	 } 
+  | descQuery()
+  	{
+  	   q = DESC_QUERY;
+  	 } 
+  | showTablesQuery()
+  	{
+  	   q = SHOW_TABLES_QUERY;
+  	 } 
+  | selectQuery()
+  	{
+  	   q = SELECT_QUERY;
+  	 } 
+  | insertQuery()
+  	{
+  	   q = INSERT_QUERY;
+  	 } 
+  | deleteQuery()
+  	{
+  	   q = DELETE_QUERY;
+  	 } 
+  )
+  (
+    {
+      return q;
+    }
+  )
+}
+
+void createTableQuery() :
+{
+}
+{
+  < CREATE_TABLE >
+  globalTableName = tableName()
+  {
+    TableSchema = new TableSchema(globalTableName);
+    globalTableName = null;
+  }
+  tableElementList()
+}
+
+void tableElementList() :
+{
+}
+{
+  < LEFT_PAREN >
+  tableElement()
+  (
+    < COMMA >
+    tableElement()
+  )*
+  < RIGHT_PAREN >
+}
+
+void tableElement() :
+{
+}
+{
+  columnDefinition()
+| tableConstraintDefinition()
+
+}
+
+void columnDefinition() :
+{
+  String s;
+  int i;
+}
+{
+  s = columnName()
+  {
+     ColDef = new ColumnDefinition(s);
+  }
+  dataType()
+  (
+    < NOT_NULL >
+    {
+      ColDef.notNull = true;
+    }
+  )?
+  {
+    TableSchema.ColDefList.add(ColDef);
+    ColDef = null;
+  }
+}
+
+void tableConstraintDefinition() :
+{
+}
+{
+  primaryKeyConstraint()
+| referentialConstraint()
+}
+
+void primaryKeyConstraint() :
+{
+}
+{
+  < PRIMARY_KEY >
+  TableSchema.PrimaryDef = columnNameList()
+  {
+    TableSchema.numPrimary++;
+  }
+}
+
+void referentialConstraint() :
+{
+  ForeignDef = new ForeignKeyDefinition();
+}
+{
+  < FOREIGN_KEY >
+  ForeignDef.referencingColumns = columnNameList()
+  < REFERENCES >
+  ForeignDef.referencedTable = tableName()
+  ForeignDef.referencedColumns = columnNameList()
+  {
+    TableSchema.ForeignDefList.add(ForeignDef);
+    ForeignDef = null;
+  }
+}
+
+ArrayList<String> columnNameList() :
+{
+  String s;
+  ArrayList<String> columnList = new ArrayList<String>();
+}
+{
+  < LEFT_PAREN >
+  s = columnName()
+  {
+    columnList.add(s);
+  }
+  (
+    < COMMA >
+    s = columnName()
+    {
+      columnList.add(s);
+    }
+  )*
+  < RIGHT_PAREN >
+  {
+    return columnList;
+  }
+}
+
+void dataType() :
+{
+  Token t;
+  int i;
+}
+{
+  < INT >
+  {
+    ColDef.type = 1;
+  }
+| (
+    < CHAR >
+    < LEFT_PAREN >
+    t = < INT_VALUE >
+    < RIGHT_PAREN >
+  )
+  {
+    ColDef.type = 2;
+    i = Integer.parseInt(t.image);
+    ColDef.charLength = i;
+  }
+| < DATE >
+  {
+    ColDef.type = 3;
+  }
+}
+
+String tableName() :
+{
+  Token t;
+}
+{
+  t = < LEGAL_IDENTIFIER > 
+  {
+    return t.image.toLowerCase();
+  }
+}
+
+String columnName() :
+{
+  Token t;
+}
+{
+  t = < LEGAL_IDENTIFIER >
+  {
+    return t.image.toLowerCase();
+  }
+}
+
+void dropTableQuery() :
+{
+}
+{
+  < DROP_TABLE >
+  globalTableName = tableName()
+}
+
+void descQuery() :
+{
+}
+{
+  < DESC >
+  globalTableName = tableName()
+}
+
+void showTablesQuery() :
+{}
+{
+  < SHOW_TABLES >
+}
+
+void selectQuery() :
+{
+  Select = new Select();
+}
+{
+  < SELECT >
+  selectList()
+  tableExpression()
+}
+
+void selectList() :
+{
+  SelectedColumn SelectedColumn;
+}
+{
+  < ASTERISK >
+  {
+    Select.SelectedColList = null;
+  }
+| SelectedColumn = selectedColumn()
+  {
+    Select.SelectedColList.add(SelectedColumn);
+  }
+  (
+    < COMMA >
+    SelectedColumn = selectedColumn()
+    {
+      Select.SelectedColList.add(SelectedColumn);
+    }
+  )*
+}
+
+SelectedColumn selectedColumn() :
+{
+  SelectedColumn SelectedCol;
+  String tableName = null;
+  String columnName;
+  String newColumnName;
+}
+{
+  //파서가 tableName() 인지 columnName인지 판단하는데 ambiguity가 있어 LOOKAHEAD(2)로 해결하였다.
+  (LOOKAHEAD(2)
+    tableName = tableName()
+  	< PERIOD >
+  )?
+  columnName = columnName()
+  {
+    newColumnName = columnName;
+  }
+  (
+    < AS >
+    newColumnName = columnName()
+  )?
+  {
+    SelectedCol = new SelectedColumn(tableName, columnName, newColumnName);
+    return SelectedCol;
+  }
+}
+
+void tableExpression() :
+{
+  Where Where;
+}
+{
+  fromClause()
+ (
+   Where = whereClause()
+   {
+     Select.Where = Where;
+   }
+ )?
+}
+
+void fromClause() :
+{}
+{
+  < FROM >
+  tableReferenceList ()
+}
+
+void tableReferenceList() :
+{}
+{
+  referedTable()
+  (
+    < COMMA >
+    referedTable()
+  )*
+}
+
+void referedTable() :
+{
+  String tableName;
+  String newTableName;
+}
+{
+  tableName = tableName()
+  {
+    newTableName = tableName;
+  }
+  (
+    < AS >
+    newTableName = tableName()
+  )?
+  {
+    Select.ReferedTableList.add(new ReferedTable(tableName, newTableName));
+  }
+}
+
+Where whereClause() :
+{
+  Where Where = new Where();
+  BoolValExp BoolValExp;
+}
+{
+  < WHERE >
+  BoolValExp = booleanValueExpression()
+  {
+    Where.BoolValExp = BoolValExp;
+    return Where;
+  }
+}
+
+BoolValExp booleanValueExpression():
+{
+  BoolValExp BoolValExp = new BoolValExp();
+  BooleanTerm BTerm;
+}
+{
+  BTerm = booleanTerm()
+  {
+    BoolValExp.BTermList.add(BTerm);
+  }
+  (
+    < OR >
+    BTerm = booleanTerm()
+    {
+      BoolValExp.BTermList.add(BTerm);
+  	}
+  )*
+  {
+    return BoolValExp;
+  }
+}
+
+BooleanTerm booleanTerm():
+{
+  BooleanTerm BTerm = new BooleanTerm();
+  BooleanFactor BFactor;
+}
+{
+  BFactor = booleanFactor()
+  {
+    BTerm.BFactorList.add(BFactor);
+  }
+  (
+    < AND >
+    BFactor = booleanFactor()
+    {
+      BTerm.BFactorList.add(BFactor);
+    }
+  )*
+  {
+    return BTerm;
+  }
+}
+
+BooleanFactor booleanFactor():
+{
+  BooleanFactor BFactor = new BooleanFactor();
+  BooleanTest BTest;
+}
+{
+  (
+    < NOT >
+    {
+      BFactor.isNot = true;
+    }
+  )?
+  BTest = booleanTest()
+  {
+    BFactor.BTest = BTest;
+    return BFactor;
+  }
+}
+
+BooleanTest booleanTest():
+{
+  BooleanTest BTest;
+}
+{
+  BTest = predicate()
+  {
+    return BTest;
+  }
+| BTest = parenthesizedBooleanExpression()
+  {
+    return BTest;
+  }
+}
+
+BoolValExp parenthesizedBooleanExpression() :
+{
+  BoolValExp BoolValExp;
+}
+{
+  < LEFT_PAREN >
+  BoolValExp = booleanValueExpression()
+  < RIGHT_PAREN >
+  {
+    return BoolValExp;
+  }
+}
+
+Predicate predicate() :
+{
+  Predicate Predicate;
+}
+{
+  //파서가 comparisonPredicate() 인지 nullPredicate 판단하는데 ambiguity가 있어 LOOKAHEAD(4)로 해결하였다.
+  LOOKAHEAD(4)
+  Predicate = comparisonPredicate()
+  {
+    return Predicate;
+  }
+| Predicate = nullPredicate()
+  {
+    return Predicate;
+  }
+}
+
+ComparisionPredicate comparisonPredicate() :
+{
+  ComparisionPredicate ComparisionPredicate;
+  Token t;
+  CompOperand Left;
+  CompOperand Right;
+}
+{
+  Left = compOperand()
+  t = < COMP_OP >
+  Right = compOperand()
+  {
+    ComparisionPredicate = new ComparisionPredicate(Left, t.image, Right);
+    return ComparisionPredicate;
+  }
+}
+
+CompOperand compOperand() :
+{
+  CompOperand CompOperand;
+  String tableName = null;
+  String columnName;
+  Value Value;
+}
+{
+  Value = comparableValue()
+  {
+    CompOperand = new CompOperand(Value);
+    return CompOperand;
+  }
+|  //파서가 tableName() 인지 columnName인지 판단하는데 ambiguity가 있어 LOOKAHEAD(2)로 해결하였다.
+  (LOOKAHEAD(2)
+  tableName = tableName()
+  < PERIOD >
+  )?
+  columnName = columnName()
+  {
+    CompOperand = new CompOperand(tableName, columnName);
+    return CompOperand;
+  }
+}
+
+Value comparableValue() :
+{
+  Token t;
+  Value value;
+}
+{
+  t = < INT_VALUE >
+  {
+    value = new Value(t.image, 1);
+    return value;
+  }
+| t = < CHAR_STRING >
+  {
+    value = new Value(t.image.substring(1, t.image.length()-1), 2);
+    return value;
+  }
+| t = < DATE_VALUE >
+  {
+    value = new Value(t.image, 3);
+    return value;
+  }
+}
+
+NullPredicate nullPredicate():
+{
+  NullPredicate NullPredicate;
+  boolean isNot;
+  String tableName = null;
+  String columnName;
+}
+{
+  ( //파서가 tableName() 인지 columnName인지 판단하는데 ambiguity가 있어 LOOKAHEAD(2)로 해결하였다.
+  LOOKAHEAD(2)
+  tableName = tableName()
+  < PERIOD >
+  )?
+  columnName = columnName()
+  isNot = nullOperation()
+  {
+    NullPredicate = new NullPredicate(tableName, columnName, isNot);
+    return NullPredicate;
+  }
+}
+
+boolean nullOperation() :
+{}
+{
+  < IS >
+  (
+    < NULL >
+    {
+      return false;
+    }
+  | < NOT_NULL >
+    {
+      return true;
+    }
+  )
+}
+
+void insertQuery() :
+{
+  String tableName;
+}
+{
+  < INSERT >
+  tableName = tableName()
+  {
+    Insert = new Insert(tableName);
+  }
+  insertColumnAndSource()
+}
+
+void insertColumnAndSource():
+{
+  ArrayList<Value> ValueList;
+  ArrayList<String> ColNameList;
+}
+{
+  (
+  ColNameList = columnNameList()
+  {
+    Insert.ColumnNameList = ColNameList;
+  }
+  )?
+  ValueList = valueList()
+  {
+    Insert.ValueList = ValueList;
+  }
+}
+
+ArrayList<Value> valueList():
+{
+  ArrayList<Value> ValueList = new ArrayList<Value>();
+  Value value;
+}
+{
+  < VALUES >
+  < LEFT_PAREN >
+  value = value()
+  {
+    ValueList.add(value);
+  }
+  (
+    < COMMA >
+    value = value()
+    {
+      ValueList.add(value);
+    }
+  )*
+  < RIGHT_PAREN >
+  {
+    return ValueList;
+  }
+}
+
+Value value() :
+{
+  Value value;
+}
+{
+  < NULL >
+  {
+    value = new Value(null, 4);
+    return value;
+  }
+| value = comparableValue()
+  {
+    return value;
+  }
+}
+
+void deleteQuery() :
+{
+  String tableName;
+  Where Where;
+}
+{
+  < DELETE >
+  tableName = tableName()
+  {
+    Delete = new Delete(tableName);
+  }
+  (
+    Where = whereClause()
+    {
+      Delete.WhereClause = Where;
+    }
+  )?
+}
+
+
+
+
+
